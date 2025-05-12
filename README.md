@@ -10,7 +10,9 @@ Please install video player provider: https://github.com/anrayliu/pyvidplayer2
 ## How to run the app
 
 First of all, start a virtual environment:
+
 `.\venv\Scripts\Activate.ps1` (using Windows PowerShell)
+
 `.\venv\Scripts\activate.bat` (using Command Line)
 
 then run app.py:
