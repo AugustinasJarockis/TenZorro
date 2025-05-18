@@ -344,7 +344,6 @@ def modify_the_video(video_path, output_path):
     all_painting_coordinates = []
     for i in range(len(frames)):
         frame_width, frame_height = frames[i].size
-        print('here')
         segments, painting_coordinates = extract_segments(frames[i], segmented_masks[i], min_area=(frame_width * frame_height / 200))
         if len(segments) > 0:
             segments_tensors = [transforms.ToTensor()(segment) for segment in segments]
