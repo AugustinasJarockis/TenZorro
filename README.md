@@ -7,7 +7,7 @@ This tool produces anotated copies of the original video with painting locations
 
 Please install video player provider: https://github.com/anrayliu/pyvidplayer2
 
-Note that TenZorro_Video_Analyser.ipynb cannot be opened here at github. You have to download it first.
+**Note that `TenZorro_Video_Analyser.ipynb` cannot be opened here at github. You have to download it first.**
 
 ## How to run the app
 
