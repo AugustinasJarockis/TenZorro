@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torchvision import transforms
 
 import cv2
@@ -76,12 +77,12 @@ def extract_significant_frames(video_path, threshold=0.4, resize_to=(320, 180)):
 # Segmentation model architecture
 class DoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
-        super().__init__()
+        super(DoubleConv, self).__init__()
         self.conv = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, 3, padding=1),
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, 3, padding=1),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True)
         )
@@ -89,42 +90,76 @@ class DoubleConv(nn.Module):
     def forward(self, x):
         return self.conv(x)
 
-class UNet(nn.Module):
-    def __init__(self, in_channels=3, out_channels=1):
-        super().__init__()
-        self.down1 = DoubleConv(in_channels, 64)
-        self.pool1 = nn.MaxPool2d(2)
-        self.down2 = DoubleConv(64, 128)
-        self.pool2 = nn.MaxPool2d(2)
-        self.down3 = DoubleConv(128, 256)
-        self.pool3 = nn.MaxPool2d(2)
-
-        self.bottleneck = DoubleConv(256, 512)
-
-        self.up3 = nn.ConvTranspose2d(512, 256, 2, stride=2)
-        self.conv3 = DoubleConv(512, 256)
-        self.up2 = nn.ConvTranspose2d(256, 128, 2, stride=2)
-        self.conv2 = DoubleConv(256, 128)
-        self.up1 = nn.ConvTranspose2d(128, 64, 2, stride=2)
-        self.conv1 = DoubleConv(128, 64)
-
-        self.final = nn.Conv2d(64, out_channels, kernel_size=1)
+class Down(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(Down, self).__init__()
+        self.maxpool_conv = nn.Sequential(
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            DoubleConv(in_channels, out_channels)
+        )
 
     def forward(self, x):
-        d1 = self.down1(x)
-        d2 = self.down2(self.pool1(d1))
-        d3 = self.down3(self.pool2(d2))
-        bn = self.bottleneck(self.pool3(d3))
-        up3 = self.up3(bn)
-        up3 = torch.cat([up3, d3], dim=1)
-        up3 = self.conv3(up3)
-        up2 = self.up2(up3)
-        up2 = torch.cat([up2, d2], dim=1)
-        up2 = self.conv2(up2)
-        up1 = self.up1(up2)
-        up1 = torch.cat([up1, d1], dim=1)
-        up1 = self.conv1(up1)
-        return self.final(up1)
+        return self.maxpool_conv(x)
+
+class Up(nn.Module):
+    def __init__(self, in_channels, out_channels, bilinear=True):
+        super(Up, self).__init__()
+        if bilinear:
+            self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+            self.conv = DoubleConv(in_channels, out_channels)
+        else:
+            self.up = nn.ConvTranspose2d(in_channels // 2, in_channels // 2, kernel_size=2, stride=2)
+            self.conv = DoubleConv(in_channels, out_channels)
+
+    def forward(self, x1, x2):
+        x1 = self.up(x1)
+        # Pad x1 to have the same spatial dimensions as x2
+        diffY = x2.size()[2] - x1.size()[2]
+        diffX = x2.size()[3] - x1.size()[3]
+        x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2,
+                        diffY // 2, diffY - diffY // 2])
+        x = torch.cat([x2, x1], dim=1)
+        return self.conv(x)
+
+class OutConv(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(OutConv, self).__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+
+    def forward(self, x):
+        return self.conv(x)
+
+class UNet(nn.Module):
+    def __init__(self, n_channels, n_classes, bilinear=True):
+        super(UNet, self).__init__()
+        self.n_channels = n_channels
+        self.n_classes = n_classes
+        self.bilinear = bilinear
+
+        self.inc = DoubleConv(n_channels, 64)
+        self.down1 = Down(64, 128)
+        self.down2 = Down(128, 256)
+        self.down3 = Down(256, 512)
+        factor = 2 if bilinear else 1
+        self.down4 = Down(512, 1024 // factor)
+        self.up1 = Up(1024, 512 // factor, bilinear)
+        self.up2 = Up(512, 256 // factor, bilinear)
+        self.up3 = Up(256, 128 // factor, bilinear)
+        self.up4 = Up(128, 64, bilinear)
+        self.outc = OutConv(64, n_classes)
+
+    def forward(self, x):
+        x1 = self.inc(x)
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        x4 = self.down3(x3)
+        x5 = self.down4(x4)
+        x = self.up1(x5, x4)
+        x = self.up2(x, x3)
+        x = self.up3(x, x2)
+        x = self.up4(x, x1)
+        logits = self.outc(x)
+        return logits
 
 """Divide the segmented images into several parts, each containing an image"""
 
@@ -148,14 +183,15 @@ def extract_segments(image_pil, mask_pil, min_area=600, output_size=(256, 256)):
 
     # Convert images to numpy arrays
     image_np = np.array(resize_transform(transforms.ToPILImage()(image_pil.cpu())))
-    mask_np = resize_transform(mask_pil).squeeze(0).cpu().numpy()
+    mask_tensor = transforms.ToTensor()(mask_pil)  # shape: [1, H, W]
+    mask_np = resize_transform(mask_tensor).squeeze(0).numpy()
     mask_np = (mask_np > 0).astype(np.uint8)
 
     # Get connected components
     num_labels, labels = cv2.connectedComponents(mask_np)
 
     segments = []
-    painting_coordinates = [];
+    painting_coordinates = []
 
     for label_id in range(1, num_labels):
         object_mask = (labels == label_id).astype(np.uint8) * 255
@@ -282,25 +318,33 @@ def modify_the_video(video_path, output_path):
         transforms.ToTensor()
     ])
 
-    segmentation_model_path = "./models/segmentation/model_epoch_40.pth"
+    segmentation_model_path = "./models/segmentation/model_epoch_30.pth"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    segmentation_model = UNet().to(device)
+    segmentation_model = UNet(3, 1).to(device)
 
     segmentation_model.load_state_dict(torch.load(segmentation_model_path, map_location=torch.device(device)))
-    segmentation_model.eval()
 
     resized_frames = torch.stack([segmentation_transform(frame) for frame in frames]).to(device)
     with torch.no_grad():
         outputs = segmentation_model(resized_frames)
         preds = torch.sigmoid(outputs)
-        preds = (preds > 0.5).float()
+
+    segmented_masks = []
+    for pred in preds:
+        mask = pred.squeeze().cpu().numpy()
+        mask = (mask > 0.5).astype(np.uint8) * 255
+
+        _, thresh = cv2.threshold(mask, 150, 255, cv2.THRESH_BINARY)
+        img = Image.fromarray(thresh).convert('L')
+        segmented_masks.append(img)
+
    
     all_segments = []
     all_painting_coordinates = []
     for i in range(len(frames)):
         frame_width, frame_height = frames[i].size
-        segments, painting_coordinates = extract_segments(frames[i], preds[i], min_area=(frame_width * frame_height / 200))
+        segments, painting_coordinates = extract_segments(frames[i], segmented_masks[i], min_area=(frame_width * frame_height / 200))
         if len(segments) > 0:
             segments_tensors = [transforms.ToTensor()(segment) for segment in segments]
             all_segments.append(torch.stack(segments_tensors))
