@@ -3,6 +3,10 @@
 A tool for automatic painting detection and classification in videos. This tool utilises convolutional neural networks to detect and classify paintings in videos.
 This tool produces anotated copies of the original video with painting locations marked and their art styles identified.
 
+## Demo
+
+https://github.com/user-attachments/assets/c68a346b-2608-471a-a9fb-9802d7091509
+
 ## Before using
 
 Please install video player provider: https://github.com/anrayliu/pyvidplayer2
